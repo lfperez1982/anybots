@@ -2,13 +2,13 @@
 
 set -euo pipefail
 
-# Determine if the environment is an LXC container
+# Determine if running in an LXC container
 is_lxc=false
 if grep -q container=lxc /proc/1/environ 2>/dev/null; then
     is_lxc=true
 fi
 
-# If running in an LXC container, prompt for a new username
+# Prompt for a new username if in LXC
 if $is_lxc; then
     read -rp "Enter the new username: " new_user
     if id "$new_user" &>/dev/null; then
@@ -22,9 +22,37 @@ fi
 # Update and upgrade the system
 apt update && apt upgrade -y
 
-# Install required packages
-apt install -y ntp curl gnupg sudo ufw unattended-upgrades speedtest-cli \
-    fail2ban git python3 openssh-server dnsutils htop net-tools iputils-ping
+# Define common packages
+common_packages=(
+    ntp
+    curl
+    gnupg
+    sudo
+    ufw
+    unattended-upgrades
+    speedtest-cli
+    fail2ban
+    git
+    python3
+    openssh-server
+    dnsutils
+    htop
+    net-tools
+)
+
+# Define VM-only packages
+vm_only_packages=(
+    iputils-ping
+    nfs-common
+    tmux
+)
+
+# Install packages based on environment
+if $is_lxc; then
+    apt install -y "${common_packages[@]}"
+else
+    apt install -y "${common_packages[@]}" "${vm_only_packages[@]}"
+fi
 
 # Append aliases and bash completion to .bashrc for all users
 for home_dir in /home/* /root; do
@@ -41,16 +69,23 @@ if $is_lxc; then
     setcap cap_net_raw+p /bin/ping
 fi
 
-# Install Docker using the official convenience script
-curl -fsSL https://get.docker.com | sh
+# Install Docker if not already installed
+if command -v docker &>/dev/null; then
+    echo "Docker is already installed. Skipping installation."
+else
+    curl -fsSL https://get.docker.com | sh
+fi
 
 # Add the new user to the docker group if in LXC
 if $is_lxc; then
     usermod -aG docker "$new_user"
 fi
 
-# Create the /docker directory
+# Create the /docker directory and set ownership
 mkdir -p /docker
+if $is_lxc; then
+    chown "$new_user:$new_user" /docker
+fi
 
 # Create the 'updateme' script
 cat << 'EOF' > /usr/local/bin/updateme
