@@ -2,21 +2,30 @@
 
 set -euo pipefail
 
+LOG_FILE="/var/log/provision.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 # Determine if running in an LXC container
 is_lxc=false
 if grep -q container=lxc /proc/1/environ 2>/dev/null; then
     is_lxc=true
 fi
 
+# Function to create a new user if it doesn't exist
+create_user() {
+    local username="$1"
+    if id "$username" &>/dev/null; then
+        echo "User '$username' already exists. Skipping creation."
+    else
+        adduser "$username"
+        usermod -aG sudo "$username"
+    fi
+}
+
 # Prompt for a new username if in LXC
 if $is_lxc; then
     read -rp "Enter the new username: " new_user
-    if id "$new_user" &>/dev/null; then
-        echo "User '$new_user' already exists. Skipping creation."
-    else
-        adduser "$new_user"
-        usermod -aG sudo "$new_user"
-    fi
+    create_user "$new_user"
 fi
 
 # Update and upgrade the system
@@ -57,11 +66,20 @@ fi
 # Append aliases and bash completion to .bashrc for all users
 for home_dir in /home/* /root; do
     bashrc="$home_dir/.bashrc"
-    {
-        echo "alias ll='ls \$LS_OPTIONS -l'"
-        echo "alias docker-upgrade='docker compose pull && docker compose up -d --force-recreate && docker image prune -a'"
-        echo "[ -f /etc/bash_completion ] && . /etc/bash_completion"
-    } >> "$bashrc"
+    # Ensure the file exists
+    touch "$bashrc"
+    # Add alias ll if not already present
+    if ! grep -q "alias ll=" "$bashrc"; then
+        echo "alias ll='ls \$LS_OPTIONS -l'" >> "$bashrc"
+    fi
+    # Add alias docker-upgrade if not already present
+    if ! grep -q "alias docker-upgrade=" "$bashrc"; then
+        echo "alias docker-upgrade='docker compose pull && docker compose up -d --force-recreate && docker image prune -a'" >> "$bashrc"
+    fi
+    # Add bash completion if not already present
+    if ! grep -q "bash_completion" "$bashrc"; then
+        echo "[ -f /etc/bash_completion ] && . /etc/bash_completion" >> "$bashrc"
+    fi
 done
 
 # Set capability to allow ping in LXC containers
@@ -87,8 +105,9 @@ if $is_lxc; then
     chown "$new_user:$new_user" /docker
 fi
 
-# Create the 'updateme' script
-cat << 'EOF' > /usr/local/bin/updateme
+# Create the 'updateme' script if it doesn't exist
+if [ ! -f /usr/local/bin/updateme ]; then
+    cat << 'EOF' > /usr/local/bin/updateme
 #!/bin/bash
 
 # Update the system
@@ -121,5 +140,7 @@ done
 echo "All services have been processed."
 EOF
 
-# Make the 'updateme' script executable
-chmod +x /usr/local/bin/updateme
+    chmod +x /usr/local/bin/updateme
+else
+    echo "'updateme' script already exists. Skipping creation."
+fi
